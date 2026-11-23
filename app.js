@@ -124,7 +124,15 @@ function deschideWhatsApp(text) {
   // doar aplicatia WhatsApp (schema whatsapp://), niciodata o pagina web
   window.location.href = 'whatsapp://send?text=' + encodeURIComponent(text);
 }
-function ciornaPentruClaude(text) { sessionStorage.setItem('panou.ciorna', text); location.hash = '#/claude'; }
+function ciornaPentruClaude(text, slug) {
+  if (slug) {
+    sessionStorage.setItem('panou.ciorna.c.' + slug, text);
+    location.hash = '#/client/' + encodeURIComponent(slug) + '/claude';
+    return;
+  }
+  sessionStorage.setItem('panou.ciorna', text);
+  location.hash = '#/claude';
+}
 
 /* ------------------------------------------------------------ date */
 async function incarcaStare(fortat) {
@@ -160,7 +168,7 @@ function actualizeazaInsigne() {
 function ruta() {
   const h = location.hash.replace(/^#\/?/, '');
   const parti = h.split('/');
-  return { v: parti[0] || 'azi', arg: decodeURIComponent(parti.slice(1).join('/') || '') };
+  return { v: parti[0] || 'clienti', arg: decodeURIComponent(parti.slice(1).join('/') || '') };
 }
 function marcheazaTab(v) {
   const tab = ({ client: 'clienti', fir: 'claude' })[v] || v;
@@ -173,6 +181,7 @@ async function randeaza(fortat) {
   if (!cfg) return ecranImperechere();
   const { v, arg } = ruta();
   marcheazaTab(v);
+  main().classList.toggle('lat', v === 'clienti' || v === 'client');
   seIncarca(true);
   try {
     if (v === 'azi') await vedereAzi(id, fortat);
@@ -181,7 +190,7 @@ async function randeaza(fortat) {
     else if (v === 'mesaje') await vedereMesaje(id, fortat);
     else if (v === 'claude') await vedereClaude(id, fortat);
     else if (v === 'fir') await vedereFir(id, arg, fortat);
-    else { location.hash = '#/azi'; }
+    else { location.hash = '#/clienti'; }
   } catch (e) {
     if (id !== randareId) return;
     if (e instanceof EroareAuth) return ecranNeautorizat();
@@ -206,7 +215,7 @@ function citestePerechea() {
 }
 
 async function imperecheaza(p) {
-  history.replaceState(null, '', location.pathname + '#/azi');
+  history.replaceState(null, '', location.pathname + '#/clienti');
   if (!API_PERMIS.test(p.u)) {
     main().innerHTML = '<div class="imperechere"><h2>Link greșit</h2><p class="text-2">Adresa din link nu e una pe care aplicația o acceptă. Cere un link nou de la Claude, de pe Mac.</p></div>';
     return false;
@@ -435,7 +444,7 @@ async function vedereAzi(id, fortat) {
     b.onclick = () => {
       const [cl, i] = b.dataset.raspunde.split('|');
       const q = intrebari.filter((x) => x.client === cl)[Number(i)];
-      if (q) ciornaPentruClaude('[' + q.client_nume + '] La întrebarea analistului: „' + q.text + '”\n\nRăspunsul meu: ');
+      if (q) ciornaPentruClaude('La întrebarea analistului: „' + q.text + '”\n\nRăspunsul meu: ', q.client);
     };
   });
   $$('[data-copiaza]').forEach((b) => { b.onclick = () => copiaza(ciorne[Number(b.dataset.copiaza)].mesaj || ''); });
@@ -444,55 +453,449 @@ async function vedereAzi(id, fortat) {
 }
 
 /* ------------------------------------------------------------ CLIENTI */
+const nf0 = new Intl.NumberFormat('ro-RO', { maximumFractionDigits: 0 });
+const gol = (x) => x === null || x === undefined || (typeof x === 'number' && isNaN(x));
+function n0(x) { return gol(x) ? '—' : nf0.format(Math.round(x)); }
+function n2(x) { return gol(x) ? '—' : nf.format(x); }
+function pct(x) { return gol(x) ? '—' : Math.round(x * 100) + '%'; }
+function scurt(x) {
+  if (gol(x)) return '—';
+  const a = Math.abs(x);
+  if (a >= 1e6) return nf.format(Math.round(x / 1e4) / 100) + ' mil.';
+  if (a >= 1e4) return nf0.format(Math.round(x / 1e3)) + 'k';
+  return nf0.format(Math.round(x));
+}
+function ziScurt(z) { const m = String(z || '').match(/^(\d{2})-(\d{2})$/); return m ? m[2] + '.' + m[1] : esc(z); }
+const RITM = { PESTE_RITM: ['peste ritm', 'bine'], PE_RITM: ['pe ritm', 'bine'], SUB_RITM: ['sub ritm', 'atentie'], SUB_PODEA: ['sub prag', 'rau'] };
+function chipRitm(s) {
+  if (!s) return '';
+  const r = RITM[s] || [String(s).toLowerCase().replace(/_/g, ' '), ''];
+  return '<span class="chip ' + r[1] + '">' + esc(r[0]) + '</span>';
+}
+function et(k) {
+  const lead = !!(k && k.lead);
+  return {
+    lead,
+    volum: lead ? 'Leaduri luna asta' : 'Vânzări reale luna asta',
+    val: (x) => lead ? n0(x) : n0(x) + ' lei',
+    valScurt: (x) => lead ? n0(x) : scurt(x) + ' lei',
+    ef: lead ? 'Cost pe lead, 7 zile' : 'ROAS real, 7 zile',
+    efScurt: lead ? 'Cost/lead 7z' : 'ROAS 7z',
+    efVal: (x) => lead ? n2(x) + ' lei' : n2(x),
+    prag: (p) => gol(p) ? '' : (lead ? 'maxim ' + n2(p) + ' lei' : 'minim ' + n2(p)),
+    efOk: (x, p) => (gol(x) || gol(p)) ? null : (lead ? x <= p : x >= p),
+    unit: lead ? 'leaduri' : 'vânzări',
+  };
+}
+function barProgres(k) {
+  if (!k || !k.luna_tinta) return '';
+  const f = Math.max(0, Math.min(1, (k.luna_facut || 0) / k.luna_tinta));
+  const a = gol(k.asteptat_azi) ? null : Math.max(0, Math.min(1, k.asteptat_azi / k.luna_tinta));
+  return '<div class="progres" role="img" aria-label="' + pct(f) + ' din țintă' + (a !== null ? ', așteptat până azi ' + pct(a) : '') + '">' +
+    '<span class="p-umplere" data-w="' + (f * 100).toFixed(1) + '"></span>' +
+    (a !== null ? '<span class="p-reper" data-l="' + (a * 100).toFixed(1) + '" title="unde ar trebui să fie azi"></span>' : '') + '</div>';
+}
+function aplicaLatimi(rad) {
+  $$('[data-w]', rad).forEach((el) => { el.style.width = el.dataset.w + '%'; });
+  $$('[data-l]', rad).forEach((el) => { el.style.left = el.dataset.l + '%'; });
+}
+function caleBara(x, y, w, h, r) {
+  if (!(h > 0)) return '';
+  r = Math.max(0, Math.min(r, w / 2, h));
+  const b = y + h;
+  const f = (v) => v.toFixed(2);
+  return 'M' + f(x) + ',' + f(b) + 'V' + f(y + r) + 'Q' + f(x) + ',' + f(y) + ' ' + f(x + r) + ',' + f(y) + 'H' + f(x + w - r) +
+    'Q' + f(x + w) + ',' + f(y) + ' ' + f(x + w) + ',' + f(y + r) + 'V' + f(b) + 'Z';
+}
+function maxRotund(m) {
+  if (!(m > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(m)));
+  for (const k of [1, 2, 2.5, 5, 10]) if (m <= k * p) return k * p;
+  return 10 * p;
+}
+function sparkline(serie, k) {
+  const s = (serie || []).slice(-14);
+  if (!s.length) return '';
+  const W = 140, H = 30, n = s.length, slot = W / n, bw = Math.max(2, slot - 2);
+  const max = Math.max(1, ...s.map((d) => d.kpi || 0));
+  const e = et(k);
+  let h = '<svg class="spark" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(e.unit) + ' pe zi, ultimele ' + n + ' zile">';
+  s.forEach((d, i) => {
+    if (gol(d.kpi)) return;
+    const bh = Math.max(d.kpi > 0 ? 1.5 : 0, (H - 2) * d.kpi / max);
+    h += '<path class="g-bara" d="' + caleBara(i * slot + (slot - bw) / 2, H - bh, bw, bh, 2) + '"><title>' + ziScurt(d.zi) + ': ' + (e.lead ? n0(d.kpi) + ' leaduri' : n0(d.kpi) + ' lei') + '</title></path>';
+  });
+  return h + '</svg>';
+}
+
+/* grafic pe zile: o singura serie, o singura axa, tooltip la fiecare bara */
+let graficeActive = [];
+function graficZile(serie, cheie, k, titlu, clasa) {
+  const W = 720, H = 210, pL = 52, pR = 8, pT = 14, pB = 28;
+  const n = serie.length;
+  if (!n) return '';
+  const vals = serie.map((d) => d[cheie]).filter((v) => !gol(v));
+  const max = maxRotund(Math.max(1, ...vals));
+  const slot = (W - pL - pR) / n, bw = Math.max(2, slot - 2);
+  const y = (v) => pT + (H - pT - pB) * (1 - v / max);
+  const e = et(k);
+  const lead = e.lead && cheie === 'kpi';
+  let s = '<svg class="grafic" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(titlu) + '">';
+  [0, 0.5, 1].forEach((f) => {
+    const v = max * f, yy = y(v);
+    s += '<line class="g-grila" x1="' + pL + '" x2="' + (W - pR) + '" y1="' + yy.toFixed(1) + '" y2="' + yy.toFixed(1) + '"/>';
+    s += '<text class="g-ax" x="' + (pL - 8) + '" y="' + (yy + 4).toFixed(1) + '" text-anchor="end">' + (lead ? n0(v) : scurt(v)) + '</text>';
+  });
+  serie.forEach((d, i) => {
+    const v = d[cheie];
+    if (gol(v)) return;
+    const yy = y(v), bh = (H - pB) - yy;
+    s += '<path class="' + clasa + '" data-i="' + i + '" d="' + caleBara(pL + i * slot + (slot - bw) / 2, yy, bw, Math.max(v > 0 ? 1.5 : 0, bh), 4) + '"/>';
+  });
+  const pas = Math.max(1, Math.ceil(n / 7));
+  serie.forEach((d, i) => {
+    if ((n - 1 - i) % pas !== 0) return;
+    s += '<text class="g-ax" x="' + (pL + i * slot + slot / 2).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle">' + ziScurt(d.zi) + '</text>';
+  });
+  serie.forEach((d, i) => {
+    s += '<rect class="g-hit" data-i="' + i + '" x="' + (pL + i * slot).toFixed(1) + '" y="' + pT + '" width="' + slot.toFixed(1) + '" height="' + (H - pT - pB + 6) + '"/>';
+  });
+  s += '</svg>';
+  const id = 'g' + graficeActive.length;
+  graficeActive.push({ id, serie, k, W, pL, slot });
+  return '<div class="grafic-cutie" data-grafic="' + id + '">' + s + '<div class="g-tip" hidden></div></div>';
+}
+function textTip(d, k) {
+  const e = et(k);
+  const l = [];
+  l.push('<b>' + ziScurt(d.zi) + '</b>');
+  if (e.lead) {
+    l.push(n0(d.kpi) + ' leaduri');
+    l.push('cost ' + n0(d.cost) + ' lei');
+    if (d.kpi > 0 && !gol(d.cost)) l.push(n2(d.cost / d.kpi) + ' lei/lead');
+  } else {
+    l.push('vânzări ' + n0(d.kpi) + ' lei');
+    l.push('cost ' + n0(d.cost) + ' lei');
+    if (d.cost > 0 && !gol(d.kpi)) l.push('ROAS ' + n2(d.kpi / d.cost));
+  }
+  return l.join('<br>');
+}
+function legaGrafice(rad) {
+  graficeActive.forEach((g) => {
+    const cutie = $('[data-grafic="' + g.id + '"]', rad);
+    if (!cutie) return;
+    const tip = $('.g-tip', cutie);
+    const arata = (ev) => {
+      const t = ev.target.closest('[data-i]');
+      if (!t) return;
+      const i = Number(t.dataset.i);
+      const d = g.serie[i];
+      if (!d) return;
+      $$('.activ', cutie).forEach((x) => x.classList.remove('activ'));
+      $$('path[data-i="' + i + '"]', cutie).forEach((x) => x.classList.add('activ'));
+      tip.innerHTML = textTip(d, g.k);
+      tip.hidden = false;
+      const lat = cutie.clientWidth;
+      const cx = ((g.pL + (i + 0.5) * g.slot) / g.W) * lat;
+      tip.style.left = Math.max(4, Math.min(lat - tip.offsetWidth - 4, cx - tip.offsetWidth / 2)) + 'px';
+    };
+    cutie.addEventListener('pointermove', arata);
+    cutie.addEventListener('pointerdown', arata);
+    cutie.addEventListener('pointerleave', () => { tip.hidden = true; $$('.activ', cutie).forEach((x) => x.classList.remove('activ')); });
+  });
+}
+function tabelZile(serie, k) {
+  const e = et(k);
+  const rows = serie.slice().reverse().map((d) => {
+    const ef = e.lead ? (d.kpi > 0 && !gol(d.cost) ? n2(d.cost / d.kpi) : '—') : (d.cost > 0 && !gol(d.kpi) ? n2(d.kpi / d.cost) : '—');
+    return '<tr><td>' + ziScurt(d.zi) + '</td><td>' + (e.lead ? n0(d.kpi) : n0(d.kpi)) + '</td><td>' + n0(d.cost) + '</td><td>' + ef + '</td></tr>';
+  }).join('');
+  return '<details><summary>Cifrele pe zile, ca tabel</summary><div class="tabel-cutie"><table class="tabel"><thead><tr><th>Ziua</th><th>' + (e.lead ? 'Leaduri' : 'Vânzări (lei)') + '</th><th>Cost (lei)</th><th>' + (e.lead ? 'Lei/lead' : 'ROAS') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></details>';
+}
+
+function cardClient(c) {
+  const k = c.kpi;
+  const e = et(k);
+  let h = '<a class="card card-client" href="#/client/' + encodeURIComponent(c.slug) + '/status">';
+  h += '<div class="rand"><div class="rand-st"><span class="emoji" aria-hidden="true">' + esc(c.emoji || '•') + '</span><span class="nume">' + esc(c.nume) + '</span></div>' +
+    (c.urgente ? '<span class="chip rau">' + c.urgente + (c.urgente === 1 ? ' urgență' : ' urgențe') + '</span>' : '') + '</div>';
+  h += '<div class="rand-st sub-rand">' + (c.stare ? '<span class="chip ' + stareClasa(c.stare) + '">' + esc(stareText(c.stare)) + '</span>' : '') + (k ? chipRitm(k.stare_ritm) : '') +
+    (c.alerte_24h ? '<span class="chip">' + c.alerte_24h + (c.alerte_24h === 1 ? ' alertă' : ' alerte') + ' 24h</span>' : '') + '</div>';
+  if (k) {
+    h += '<div class="kpi-mare"><span class="eticheta">' + esc(e.volum) + '</span><div class="rand"><b>' + e.val(k.luna_facut) + '</b>' +
+      (k.luna_tinta ? '<span class="mic">din ' + e.val(k.luna_tinta) + ' · ' + pct(k.luna_facut / k.luna_tinta) + '</span>' : '<span class="mic">fără țintă de volum</span>') + '</div></div>';
+    h += barProgres(k);
+    const ok = e.efOk(k.eficienta_7z, k.podea);
+    h += '<div class="kpi-mici">' +
+      '<span>' + esc(e.efScurt) + ' <b class="' + (ok === false ? 'txt-rau' : '') + '">' + e.efVal(k.eficienta_7z) + '</b>' + (gol(k.podea) ? '' : ' <span class="mic">' + esc(e.prag(k.podea)) + '</span>') + '</span>' +
+      '<span>Ieri <b>' + e.valScurt(k.ieri && k.ieri.kpi) + '</b></span>' +
+      (gol(k.fata_de_drum) ? '' : '<span>' + pct(k.fata_de_drum) + ' din drum</span>') +
+      '</div>';
+    h += sparkline(k.serie, k);
+  } else if (c.linie) {
+    h += '<div class="text-2">' + esc(c.linie) + '</div>';
+  }
+  return h + '</a>';
+}
+
 async function vedereClienti(id, fortat) {
   seteazaTitlu('Clienți');
+  main().classList.add('lat');
   if (!S.stare) main().innerHTML = '<div class="incarcare">Se încarcă…</div>';
   const s = await incarcaStare(fortat);
   if (id !== randareId) return;
   seteazaActualizat(s.generat);
   const cl = s.clienti || [];
-  let h = '<input class="cauta" id="cauta-client" type="search" placeholder="Caută client" autocomplete="off">';
-  h += '<div id="lista-clienti">' + cl.map((c) => '<div class="card apasabil" data-slug="' + esc(c.slug) + '" data-nume="' + esc(c.nume.toLowerCase()) + '"><div class="client-rand"><span class="emoji" aria-hidden="true">' + esc(c.emoji || '•') + '</span><div class="mijloc"><div class="rand"><span class="nume">' + esc(c.nume) + '</span>' +
-    (c.de_aprobat ? '<span class="chip rau">' + c.de_aprobat + ' de aprobat</span>' : (c.stare ? '<span class="chip ' + stareClasa(c.stare) + '">' + esc(stareText(c.stare)) + '</span>' : '')) +
-    '</div>' + (c.linie ? '<div class="text-2">' + esc(c.linie) + '</div>' : '') + (c.rezumat ? '<div class="mic">' + esc(c.rezumat.length > 170 ? c.rezumat.slice(0, 170) + '…' : c.rezumat) + '</div>' : '') + '</div></div></div>').join('') + '</div>';
+  const nr = (st) => cl.filter((c) => c.stare === st).length;
+  const urg = cl.reduce((a, c) => a + (c.urgente || 0), 0);
+  const filtru = S.filtruClienti || 'toti';
+  let h = '<div class="rezumat-zi patru">' +
+    '<div class="cifra"><b>' + nr('ROSU') + '</b><span>pe roșu</span></div>' +
+    '<div class="cifra"><b>' + nr('GALBEN') + '</b><span>pe galben</span></div>' +
+    '<div class="cifra"><b>' + nr('VERDE') + '</b><span>pe verde</span></div>' +
+    '<div class="cifra"><b>' + urg + '</b><span>urgențe</span></div></div>';
+  h += '<div class="bara-filtre"><input class="cauta" id="cauta-client" type="search" placeholder="Caută client" autocomplete="off">' +
+    '<div class="filtre">' + [['toti', 'Toți'], ['rosu', 'Pe roșu'], ['urgent', 'Cu urgențe']].map(([v, t]) => '<button class="filtru' + (filtru === v ? ' activ' : '') + '" data-filtru="' + v + '">' + t + '</button>').join('') + '</div></div>';
+  h += '<div class="grila-clienti" id="lista-clienti">' + cl.map((c) => '<div class="celula" data-nume="' + esc(c.nume.toLowerCase()) + '" data-stare="' + esc(c.stare || '') + '" data-urgente="' + (c.urgente || 0) + '">' + cardClient(c) + '</div>').join('') + '</div>';
+  h += '<p class="mic">Vânzările sunt cele reale, din foaia de tracking a fiecărui client, până ieri. Bara arată cât s-a făcut din ținta lunii; liniuța e unde ar trebui să fie azi.</p>';
   main().innerHTML = h;
-  $$('[data-slug]').forEach((el) => { el.onclick = () => { location.hash = '#/client/' + encodeURIComponent(el.dataset.slug); }; });
-  $('#cauta-client').oninput = (e) => {
-    const t = e.target.value.trim().toLowerCase();
-    $$('#lista-clienti [data-slug]').forEach((el) => { el.hidden = !!t && !el.dataset.nume.includes(t); });
+  aplicaLatimi(main());
+  const aplicaFiltre = () => {
+    const t = ($('#cauta-client').value || '').trim().toLowerCase();
+    const f = S.filtruClienti || 'toti';
+    $$('#lista-clienti .celula').forEach((el) => {
+      let ok = !t || el.dataset.nume.includes(t);
+      if (f === 'rosu') ok = ok && el.dataset.stare === 'ROSU';
+      if (f === 'urgent') ok = ok && Number(el.dataset.urgente) > 0;
+      el.hidden = !ok;
+    });
   };
+  $('#cauta-client').oninput = aplicaFiltre;
+  $$('[data-filtru]').forEach((b) => {
+    b.onclick = () => {
+      S.filtruClienti = b.dataset.filtru;
+      $$('[data-filtru]').forEach((x) => x.classList.toggle('activ', x === b));
+      aplicaFiltre();
+    };
+  });
+  aplicaFiltre();
   programeaza(() => randeaza(true), 120000);
 }
 
-async function vedereClient(id, slug, fortat) {
+const SUBTABURI = [['status', 'Status'], ['urgent', 'Urgent'], ['facut', 'De făcut'], ['imbunatatit', 'De îmbunătățit'], ['claude', 'Claude']];
+
+function meniuClienti(slugActiv, sub) {
+  const cl = (S.stare && S.stare.clienti) || [];
+  return '<nav class="meniu-clienti" aria-label="Clienți"><a class="mc-toti" href="#/clienti">Toți clienții</a>' + cl.map((c) =>
+    '<a class="mc' + (c.slug === slugActiv ? ' activ' : '') + '" href="#/client/' + encodeURIComponent(c.slug) + '/' + sub + '"' + (c.slug === slugActiv ? ' aria-current="page"' : '') + '>' +
+    '<span class="emoji" aria-hidden="true">' + esc(c.emoji || '•') + '</span><span class="mc-nume">' + esc(c.nume) + '</span>' +
+    (c.urgente ? '<b class="mc-nr" aria-label="' + c.urgente + ' urgențe">' + c.urgente + '</b>' : '') + '</a>').join('') + '</nav>';
+}
+
+function deFacutAzi(c) { return (c.de_facut || []).filter((d) => d && typeof d === 'object' && /azi/i.test(String(d.urgenta || ''))); }
+
+function itemDeFacut(d, i, slug) {
+  if (!d || typeof d !== 'object') return '<li>' + esc(d) + '</li>';
+  return '<li class="item-facut">' +
+    '<div class="rand-st">' + (d.cine ? '<span class="chip">' + esc(d.cine) + '</span>' : '') + (d.urgenta ? '<span class="chip' + (/azi/i.test(d.urgenta) ? ' atentie' : '') + '">' + esc(d.urgenta) + '</span>' : '') + '</div>' +
+    '<div class="ce">' + esc(d.ce) + '</div>' +
+    (d.de_ce ? '<div class="mic">' + esc(d.de_ce) + '</div>' : '') +
+    (d.castig_estimat ? '<div class="mic">câștig estimat: ' + esc(d.castig_estimat) + '</div>' : '') +
+    (d.mesaj_ciorna ? '<div class="mic">către ' + esc(d.destinatar || '—') + '</div><div class="ciorna">' + esc(d.mesaj_ciorna) + '</div>' +
+      '<div class="butoane"><button class="buton mic-b" data-copiaza-c="' + i + '">Copiază</button><button class="buton mic-b" data-wa-c="' + i + '">Deschide WhatsApp</button></div>' : '') +
+    '<div class="butoane"><button class="buton mic-b" data-claude-facut="' + i + '">' + (/claude/i.test(d.cine || '') ? 'Cere-i lui Claude să o facă' : 'Discută cu Claude') + '</button></div>' +
+    '</li>';
+}
+
+async function vedereClient(id, arg, fortat) {
+  const [slug, subBrut] = String(arg || '').split('/');
+  const sub = SUBTABURI.some(([v]) => v === subBrut) ? subBrut : 'status';
   if (!/^[a-z0-9-]{1,40}$/.test(slug)) { location.hash = '#/clienti'; return; }
-  if (!S.clienti[slug] || fortat) {
-    if (!S.clienti[slug]) main().innerHTML = '<div class="incarcare">Se încarcă…</div>';
-    S.clienti[slug] = await api('/api/client?slug=' + encodeURIComponent(slug));
+  main().classList.add('lat');
+  if (!S.stare) { try { await incarcaStare(false); } catch (e) { /* se vede mai jos */ } }
+  if (!S.clienti[slug] || fortat || Date.now() - (S.clienti[slug]._la || 0) > 60000) {
+    if (!S.clienti[slug]) main().innerHTML = meniuClienti(slug, sub) + '<div class="incarcare">Se încarcă…</div>';
+    const d = await api('/api/client?slug=' + encodeURIComponent(slug));
+    d._la = Date.now();
+    S.clienti[slug] = d;
   }
   if (id !== randareId) return;
   const c = S.clienti[slug];
+  const k = c.kpi;
+  const e = et(k);
   seteazaTitlu(c.nume);
-  let h = '<div class="card"><div class="rand"><div class="rand-st"><span class="emoji">' + esc(c.emoji || '') + '</span><b>' + esc(c.linie || '') + '</b></div>' + (c.stare ? '<span class="chip ' + stareClasa(c.stare) + '">' + esc(stareText(c.stare)) + '</span>' : '') + '</div>' +
-    '<div class="mic">mod ' + esc(c.mod || '—') + ' · ' + esc(c.tip || '') + ' · analiza din ' + esc(c.analiza_zi || '—') + '</div>' +
-    (c.rezumat ? '<p class="pre">' + esc(c.rezumat) + '</p>' : '') + '</div>';
+  graficeActive = [];
   const deAprobat = (c.propuneri || []).filter((p) => p.status === 'ASTEAPTA_DA' || p.status === 'AMANAT');
-  if (deAprobat.length) h += '<div class="sectiune"><h2>De aprobat</h2></div>' + deAprobat.map((p) => cardPropunere(p)).join('');
-  if ((c.intrebari || []).length) h += '<div class="sectiune"><h2>Întrebări</h2></div><div class="card">' + c.intrebari.map((q, i) => '<div class="intrebare"><div class="pre">' + esc(q) + '</div><div class="butoane"><button class="buton mic-b" data-q="' + i + '">Răspunde</button></div></div>').join('') + '</div>';
+  const azi = deFacutAzi(c);
+  const nrUrgent = deAprobat.length + azi.length;
+  const nrImb = (c.idei || []).length + (c.evaluari || []).filter((x) => x && /nu a mers|par[tț]ial/i.test(x.verdict || '')).length;
+  const nrFire = (c.fire || []).length;
+  const numar = { urgent: nrUrgent, facut: (c.de_facut || []).length, imbunatatit: nrImb, claude: nrFire };
+
+  let h = '<div class="pagina-client">' + meniuClienti(slug, sub) + '<section class="continut-client">';
+  h += '<div class="antet-client"><div class="rand"><div class="rand-st"><span class="emoji">' + esc(c.emoji || '') + '</span><h2>' + esc(c.nume) + '</h2></div>' +
+    '<div class="rand-st">' + (c.stare ? '<span class="chip ' + stareClasa(c.stare) + '">' + esc(stareText(c.stare)) + '</span>' : '') + (k ? chipRitm(k.stare_ritm) : '') + '</div></div>' +
+    '<div class="mic">' + (c.linie ? esc(c.linie) + ' · ' : '') + 'mod ' + esc(c.mod || '—') + ' · ' + (e.lead ? 'leaduri' : 'magazin') + ' · analiza din ' + esc(c.analiza_zi || '—') + (k ? ' · cifrele până ieri' : '') + '</div></div>';
+  h += '<nav class="subtaburi" aria-label="Secțiuni client">' + SUBTABURI.map(([v, t]) => '<a href="#/client/' + encodeURIComponent(slug) + '/' + v + '" class="' + (v === sub ? 'activ' : '') + '"' + (v === sub ? ' aria-current="page"' : '') + '>' + t + (numar[v] ? ' <b class="nr' + (v === 'urgent' ? ' rau' : '') + '">' + numar[v] + '</b>' : '') + '</a>').join('') + '</nav>';
+
+  if (sub === 'status') h += sectiuneStatus(c, k, e);
+  else if (sub === 'urgent') h += sectiuneUrgent(c, deAprobat, azi);
+  else if (sub === 'facut') h += sectiuneFacut(c);
+  else if (sub === 'imbunatatit') h += sectiuneImbunatatit(c);
+  else if (sub === 'claude') h += sectiuneClaude(c);
+  h += '</section></div>';
+  main().innerHTML = h;
+  aplicaLatimi(main());
+  legaGrafice(main());
+  legaButoanePropuneri(main(), deAprobat);
+  const lista = c.de_facut || [];
+  $$('[data-copiaza-c]').forEach((b) => { b.onclick = () => copiaza((lista[Number(b.dataset.copiazaC)] || {}).mesaj_ciorna || ''); });
+  $$('[data-wa-c]').forEach((b) => { b.onclick = () => deschideWhatsApp((lista[Number(b.dataset.waC)] || {}).mesaj_ciorna || ''); });
+  $$('[data-claude-facut]').forEach((b) => {
+    b.onclick = () => {
+      const d = lista[Number(b.dataset.claudeFacut)] || {};
+      const fa = /claude/i.test(d.cine || '');
+      ciornaPentruClaude((fa ? 'Fă asta de pe lista de azi: ' : 'Vreau să discutăm asta de pe lista de azi: ') + '„' + (d.ce || '') + '”\n\n', slug);
+    };
+  });
+  $$('[data-q]').forEach((b) => { b.onclick = () => ciornaPentruClaude('La întrebarea analistului: „' + (c.intrebari || [])[Number(b.dataset.q)] + '”\n\nRăspunsul meu: ', slug); });
+  $$('[data-idee]').forEach((b) => { b.onclick = () => { const d = (c.idei || [])[Number(b.dataset.idee)] || {}; ciornaPentruClaude('Despre ideea: „' + (typeof d === 'object' ? d.idee : d) + '”\n\n', slug); }; });
+  if (sub === 'claude') legaCompunereClient(c);
+  const activ = $('.meniu-clienti .mc.activ');
+  if (activ && activ.scrollIntoView) activ.scrollIntoView({ block: 'nearest', inline: 'center' });
+  if (!fortat) window.scrollTo(0, 0);
+  programeaza(() => randeaza(true), 120000);
+}
+
+function dala(eticheta, valoare, sub, extra) {
+  return '<div class="dala"><span class="eticheta">' + esc(eticheta) + '</span><b>' + valoare + '</b>' + (sub ? '<span class="mic">' + sub + '</span>' : '') + (extra || '') + '</div>';
+}
+
+function sectiuneStatus(c, k, e) {
+  let h = '';
+  if (k) {
+    const ok = e.efOk(k.eficienta_7z, k.podea);
+    const okAnt = e.efOk(k.z7_anterior && k.z7_anterior.roas, k.podea);
+    h += '<div class="dale">';
+    h += dala(e.volum, e.val(k.luna_facut), k.luna_tinta ? 'din ' + e.val(k.luna_tinta) + ' · ' + pct(k.luna_facut / k.luna_tinta) + (gol(k.asteptat_azi) ? '' : ' · așteptat azi ' + e.valScurt(k.asteptat_azi)) : 'fără țintă de volum pe lună', barProgres(k));
+    h += dala('Ritmul', gol(k.fata_de_drum) ? '—' : pct(k.fata_de_drum) + ' din drum',
+      (gol(k.proiectie) ? '' : 'proiecție la ritmul de 7 zile: ' + e.val(k.proiectie)) + (gol(k.necesar_pe_zi) ? '' : '<br>necesar ' + e.val(k.necesar_pe_zi) + '/zi, ritm ' + e.val(k.ritm_7z_pe_zi) + '/zi'));
+    h += dala(e.ef, '<span class="' + (ok === false ? 'txt-rau' : ok ? 'txt-bine' : '') + '">' + e.efVal(k.eficienta_7z) + '</span>',
+      [e.prag(k.podea), e.lead ? '' : (gol(k.z7_anterior && k.z7_anterior.roas) ? '' : 'săpt. trecută ' + n2(k.z7_anterior.roas)), gol(k.eficienta_luna) ? '' : 'luna: ' + e.efVal(k.eficienta_luna)].filter(Boolean).join(' · '));
+    h += dala('Cost reclame luna asta', n0(k.cost_luna) + ' lei', (gol(k.cost_plan) ? '' : 'plan ' + n0(k.cost_plan) + ' lei') + (gol(k.buget_mediu_ramas_pe_zi) ? '' : ' · rămas ~' + n0(k.buget_mediu_ramas_pe_zi) + '/zi'));
+    const ie = k.ieri || {};
+    h += dala('Ieri' + (ie.zi ? ', ' + ziScurt(String(ie.zi).slice(5)) : ''), e.lead ? n0(ie.kpi) + ' leaduri' : n0(ie.kpi) + ' lei',
+      'cost ' + n0(ie.cost) + ' lei' + (e.lead ? (ie.kpi > 0 ? ' · ' + n2(ie.cost / ie.kpi) + ' lei/lead' : '') : (ie.cost > 0 ? ' · ROAS ' + n2(ie.kpi / ie.cost) : '')));
+    h += dala('Zile rămase în lună', n0(k.zile_ramase), (k.z7 && !gol(k.z7.kpi)) ? 'ultimele 7 zile: ' + e.val(k.z7.kpi) + ' la ' + n0(k.z7.cost) + ' lei cost' : '');
+    h += '</div>';
+    void okAnt;
+    if (k.alte) h += '<div class="avert">' + esc(k.alte) + '</div>';
+    if ((k.lipsa_7z || []).length) h += '<div class="avert">Zile fără date în foaie în ultima săptămână: ' + esc(k.lipsa_7z.join(', ')) + '</div>';
+    if ((k.serie || []).length) {
+      h += '<div class="card"><div class="rand"><h3>' + (e.lead ? 'Leaduri pe zi' : 'Vânzări reale pe zi (lei)') + '</h3><span class="mic">ultimele ' + k.serie.length + ' de zile</span></div>' +
+        graficZile(k.serie, 'kpi', k, e.lead ? 'Leaduri pe zi' : 'Vânzări reale pe zi', 'g-bara') + '</div>';
+      h += '<div class="card"><div class="rand"><h3>Cost reclame pe zi (lei)</h3><span class="mic">Meta + Google, fără TVA</span></div>' +
+        graficZile(k.serie, 'cost', k, 'Cost reclame pe zi', 'g-bara-cost') + tabelZile(k.serie, k) + '</div>';
+    }
+  } else {
+    h += '<div class="avert">Pentru clientul ăsta n-am găsit cifrele de tracking în dosarul de azi.</div>';
+  }
+  if (c.rezumat) h += '<div class="sectiune"><h2>Ce spune analistul</h2><span class="mic">' + esc(c.analiza_zi || '') + '</span></div><div class="card pre">' + esc(c.rezumat) + '</div>';
   if ((c.diagnostic || []).length) h += '<div class="sectiune"><h2>Diagnostic</h2></div><div class="card"><ul class="lista">' + c.diagnostic.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>';
   if ((c.actiuni || []).length) h += '<div class="sectiune"><h2>Ce a propus azi</h2></div><div class="card"><ul class="lista">' + c.actiuni.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>';
-  if ((c.de_facut || []).length) h += '<div class="sectiune"><h2>De făcut</h2></div><div class="card"><ul class="lista">' + c.de_facut.map((d) => (typeof d === 'object' && d) ? ('<li>' + (d.cine ? '<span class="chip">' + esc(d.cine) + '</span> ' : '') + esc(d.ce) + (d.de_ce ? '<div class="mic">' + esc(d.de_ce) + '</div>' : '') + (d.mesaj_ciorna ? '<div class="ciorna">' + esc(d.mesaj_ciorna) + '</div>' : '') + '</li>') : ('<li>' + esc(d) + '</li>')).join('') + '</ul></div>';
-  if ((c.verdicte || []).length) h += '<details><summary>Verdictele verificatorului (' + c.verdicte.length + ')</summary><div class="card"><ul class="lista">' + c.verdicte.map((v) => '<li><span class="chip ' + verdictClasa(v.verdict) + '">' + esc(v.verdict) + '</span> ' + esc(v.id) + ' · ' + esc(v.actiune) + '</li>').join('') + '</ul></div></details>';
-  if ((c.evaluari || []).length) h += '<details><summary>Ce a mers și ce nu (' + c.evaluari.length + ')</summary><div class="card"><ul class="lista">' + c.evaluari.map((e) => (typeof e === 'object' && e) ? ('<li><b>' + esc(e.verdict) + '</b> · ' + esc(e.ref) + '<div class="mic">' + esc(e.cifre) + '</div></li>') : ('<li>' + esc(e) + '</li>')).join('') + '</ul></div></details>';
-  if ((c.idei || []).length) h += '<details><summary>Idei (' + c.idei.length + ')</summary><div class="card"><ul class="lista">' + c.idei.map((d) => (typeof d === 'object' && d) ? ('<li>' + esc(d.idee) + (d.cifra ? '<div class="mic">' + esc(d.cifra) + '</div>' : '') + '</li>') : ('<li>' + esc(d) + '</li>')).join('') + '</ul></div></details>';
+  return h;
+}
+
+function sectiuneUrgent(c, deAprobat, azi) {
+  let h = '';
+  h += '<div class="sectiune"><h2>Așteaptă DA-ul tău</h2><span class="mic">' + deAprobat.length + '</span></div>';
+  h += deAprobat.length ? deAprobat.map((p) => cardPropunere(p)).join('') : '<div class="gol">Nimic de aprobat la clientul ăsta.</div>';
+  const lista = c.de_facut || [];
+  h += '<div class="sectiune"><h2>De făcut azi</h2><span class="mic">' + azi.length + '</span></div>';
+  h += azi.length ? '<div class="card"><ul class="lista-facut">' + azi.map((d) => itemDeFacut(d, lista.indexOf(d), c.slug)).join('') + '</ul></div>' : '<div class="gol">Nimic marcat pentru azi.</div>';
+  const q = c.intrebari || [];
+  h += '<div class="sectiune"><h2>Întrebări pentru tine</h2><span class="mic">' + q.length + '</span></div>';
+  h += q.length ? '<div class="card">' + q.map((x, i) => '<div class="intrebare"><div class="pre">' + esc(x) + '</div><div class="butoane"><button class="buton mic-b" data-q="' + i + '">Răspunde</button></div></div>').join('') + '</div>' : '<div class="gol">Nicio întrebare.</div>';
+  const al = c.alerte || [];
+  h += '<div class="sectiune"><h2>Alertele automatizărilor</h2><span class="mic">ultimele 3 zile · ' + al.length + '</span></div>';
+  h += al.length ? al.map((m) => '<div class="card mesaj-feed"><div class="mic">' + ora(m.ts) + '</div><div class="pre">' + esc(String(m.text || '').replace(/^🤖\s*/, '')) + '</div></div>').join('') : '<div class="gol">Nicio alertă în ultimele 3 zile.</div>';
+  return h;
+}
+
+function sectiuneFacut(c) {
+  const lista = c.de_facut || [];
+  const andrei = lista.filter((d) => d && typeof d === 'object' && /andrei/i.test(d.cine || ''));
+  const restul = lista.filter((d) => !(d && typeof d === 'object' && /andrei/i.test(d.cine || '')));
+  let h = '';
+  h += '<div class="sectiune"><h2>Pentru tine</h2><span class="mic">' + andrei.length + '</span></div>';
+  h += andrei.length ? '<div class="card"><ul class="lista-facut">' + andrei.map((d) => itemDeFacut(d, lista.indexOf(d), c.slug)).join('') + '</ul></div>' : '<div class="gol">Nimic pentru tine.</div>';
+  h += '<div class="sectiune"><h2>Pentru Claude și pilot</h2><span class="mic">' + restul.length + '</span></div>';
+  h += restul.length ? '<div class="card"><ul class="lista-facut">' + restul.map((d) => itemDeFacut(d, lista.indexOf(d), c.slug)).join('') + '</ul></div>' : '<div class="gol">Nimic.</div>';
+  return h;
+}
+
+function sectiuneImbunatatit(c) {
+  let h = '';
+  const idei = c.idei || [];
+  h += '<div class="sectiune"><h2>Idei de creștere</h2><span class="mic">' + idei.length + '</span></div>';
+  h += idei.length ? idei.map((d, i) => '<div class="card">' + (typeof d === 'object' && d ? '<div class="titlu-card">' + esc(d.idee) + '</div>' + (d.cifra ? '<div class="text-2">' + esc(d.cifra) + '</div>' : '') + (d.pas_urmator ? '<div class="mic">pasul următor: ' + esc(d.pas_urmator) + '</div>' : '') : '<div>' + esc(d) + '</div>') +
+    '<div class="butoane"><button class="buton mic-b" data-idee="' + i + '">Discută cu Claude</button></div></div>').join('') : '<div class="gol">Nicio idee azi.</div>';
+  const ev = (c.evaluari || []).filter((x) => x && typeof x === 'object');
+  const nuAMers = ev.filter((x) => /nu a mers|par[tț]ial/i.test(x.verdict || ''));
+  const aMers = ev.filter((x) => !/nu a mers|par[tț]ial/i.test(x.verdict || ''));
+  h += '<div class="sectiune"><h2>Ce n-a mers</h2><span class="mic">' + nuAMers.length + '</span></div>';
+  h += nuAMers.length ? '<div class="card"><ul class="lista">' + nuAMers.map((x) => '<li><span class="chip rau">' + esc(x.verdict) + '</span> ' + esc(x.ref) + '<div class="mic">' + esc(x.cifre) + '</div></li>').join('') + '</ul></div>' : '<div class="gol">Nimic ratat în evaluările de azi.</div>';
+  if (aMers.length) h += '<details><summary>Ce a mers (' + aMers.length + ')</summary><div class="card"><ul class="lista">' + aMers.map((x) => '<li><span class="chip bine">' + esc(x.verdict) + '</span> ' + esc(x.ref) + '<div class="mic">' + esc(x.cifre) + '</div></li>').join('') + '</ul></div></details>';
+  if ((c.verdicte || []).length) h += '<details><summary>Verdictele verificatorului azi (' + c.verdicte.length + ')</summary><div class="card"><ul class="lista">' + c.verdicte.map((v) => '<li><span class="chip ' + verdictClasa(v.verdict) + '">' + esc(v.verdict) + '</span> ' + esc(v.id) + ' · ' + esc(v.actiune) + '</li>').join('') + '</ul></div></details>';
   const istoric = (c.propuneri || []).filter((p) => p.status !== 'ASTEAPTA_DA' && p.status !== 'AMANAT');
-  if (istoric.length) h += '<details><summary>Propunerile din ultimele 10 zile (' + istoric.length + ')</summary><div class="card"><ul class="lista">' + istoric.map((p) => '<li><span class="chip ' + (p.status === 'APLICAT' ? 'bine' : (p.status === 'RESPINS' || p.status === 'BLOCAT' || String(p.status).startsWith('ESUAT')) ? 'rau' : '') + '">' + esc(p.status) + '</span> ' + esc(p.id) + ' · ' + esc(p.scurt || p.nume || tip(p.tip)) + (p.de_la !== null && p.de_la !== undefined ? ' · ' + num(p.de_la) + ' → ' + num(p.la) + ' ' + unitate(p.unitate) : '') + '</li>').join('') + '</ul></div></details>';
-  h += '<div class="butoane"><button class="buton principal" id="intreaba">Scrie-i lui Claude despre ' + esc(c.nume) + '</button></div>';
-  main().innerHTML = h;
-  legaButoanePropuneri(main(), deAprobat);
-  $$('[data-q]').forEach((b) => { b.onclick = () => ciornaPentruClaude('[' + c.nume + '] La întrebarea analistului: „' + c.intrebari[Number(b.dataset.q)] + '”\n\nRăspunsul meu: '); });
-  $('#intreaba').onclick = () => ciornaPentruClaude('[' + c.nume + '] ');
-  window.scrollTo(0, 0);
+  if (istoric.length) h += '<details><summary>Schimbările din ultimele 10 zile (' + istoric.length + ')</summary><div class="card"><ul class="lista">' + istoric.map((p) => '<li><span class="chip ' + (p.status === 'APLICAT' ? 'bine' : (p.status === 'RESPINS' || p.status === 'BLOCAT' || String(p.status).startsWith('ESUAT')) ? 'rau' : '') + '">' + esc(p.status) + '</span> ' + esc(p.id) + ' · ' + esc(p.scurt || p.nume || tip(p.tip)) + (gol(p.de_la) ? '' : ' · ' + num(p.de_la) + ' → ' + num(p.la) + ' ' + unitate(p.unitate)) + '</li>').join('') + '</ul></div></details>';
+  return h;
+}
+
+const INTREBARI_RAPIDE = [
+  'Ce e cel mai important de făcut azi la clientul ăsta?',
+  'De ce e pe roșu și ce schimbăm ca să iasă?',
+  'Cum stăm față de ținta lunii și ce trebuie să se întâmple până la final?',
+  'Ce idei de creștere ai pentru săptămâna asta?',
+];
+
+function sectiuneClaude(c) {
+  const ciorna = sessionStorage.getItem('panou.ciorna.c.' + c.slug) || '';
+  let h = '<div class="card compunere"><label class="mic" for="text-client">Mesaj către Claude despre ' + esc(c.nume) + ' (o sesiune nouă pe Mac, care știe de ce client e vorba)</label>' +
+    '<textarea id="text-client" placeholder="Ce vrei să afli sau să se facă la ' + esc(c.nume) + '?">' + esc(ciorna) + '</textarea>' +
+    '<div class="rapide">' + INTREBARI_RAPIDE.map((q, i) => '<button class="filtru" data-rapid="' + i + '">' + esc(q) + '</button>').join('') + '</div>' +
+    '<div class="rand"><span class="mic">Răspunsul apare în fir, aici și la Claude.</span><button class="buton principal" id="trimite-client">Trimite</button></div></div>';
+  const fire = c.fire || [];
+  h += '<div class="sectiune"><h2>Conversațiile despre ' + esc(c.nume) + '</h2><span class="mic">' + fire.length + '</span></div>';
+  h += fire.length ? fire.map((f) => cardFir(f)).join('') : '<div class="gol">Nicio conversație încă.</div>';
+  return h;
+}
+
+function legaCompunereClient(c) {
+  const ta = $('#text-client');
+  if (!ta) return;
+  const cheie = 'panou.ciorna.c.' + c.slug;
+  ta.oninput = () => sessionStorage.setItem(cheie, ta.value);
+  if (ta.value) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  $$('[data-rapid]').forEach((b) => { b.onclick = () => { ta.value = INTREBARI_RAPIDE[Number(b.dataset.rapid)]; sessionStorage.setItem(cheie, ta.value); ta.focus(); }; });
+  $$('[data-fir]').forEach((el) => { el.onclick = () => { location.hash = '#/fir/' + el.dataset.fir; }; });
+  $('#trimite-client').onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) { toast('Scrie întâi mesajul.', true); return; }
+    $('#trimite-client').disabled = true;
+    try {
+      const r = await api('/api/comanda', { method: 'POST', body: { text, client: c.slug } });
+      if (r.ok === false) throw new Error(r.eroare || 'nu s-a trimis');
+      sessionStorage.removeItem(cheie);
+      S.fireLa = 0;
+      delete S.clienti[c.slug];
+      location.hash = '#/fir/' + r.fir;
+    } catch (e) {
+      if (e instanceof EroareAuth) return ecranNeautorizat();
+      toast(e.message, true);
+      $('#trimite-client').disabled = false;
+    }
+  };
 }
 
 /* ------------------------------------------------------------ MESAJE */
@@ -525,7 +928,26 @@ async function vedereMesaje(id, fortat) {
   programeaza(() => randeaza(true), 120000);
 }
 
+
+/* text din raspunsurile lui Claude: intai escape, apoi doar **ingrosat**, `cod`, titluri si liniute (sigur, fara HTML din afara) */
+function textBogat(t) {
+  return String(t == null ? '' : t).split('\n').map((l) => {
+    let x = esc(l);
+    x = x.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+    if (/^#{1,4}\s+/.test(l)) return '<b>' + x.replace(/^#{1,4}\s+/, '') + '</b>';
+    if (/^\s*[-*]\s+/.test(l)) return x.replace(/^\s*[-*]\s+/, '• ');
+    return x;
+  }).join('\n');
+}
 /* ------------------------------------------------------------ CLAUDE */
+function cardFir(f, cuClient) {
+  const nou = f.ultim_de === 'claude' && (!vazut[f.id] || vazut[f.id] < f.actualizat);
+  const chip = f.stare === 'lucreaza' ? '<span class="chip atentie">lucrează</span>' : f.stare === 'eroare' ? '<span class="chip rau">eroare</span>' : nou ? '<span class="chip bine">răspuns nou</span>' : '<span class="chip">gata</span>';
+  return '<div class="card apasabil" data-fir="' + esc(f.id) + '"><div class="rand"><b class="titlu-card">' + esc(f.titlu) + '</b>' + chip + '</div>' +
+    '<div class="mic">' + (cuClient && f.client_nume ? esc(f.client_nume) + ' · ' : '') + ora(f.actualizat) + ' · ' + f.nr + ' mesaje</div>' +
+    (f.stare === 'lucreaza' && f.pas ? '<div class="lucreaza"><span class="punct-anim"></span>' + esc(f.pas) + '</div>' : '<div class="text-2">' + esc((f.ultim || '').slice(0, 180)) + '</div>') + '</div>';
+}
+
 async function vedereClaude(id, fortat) {
   seteazaTitlu('Claude');
   if (!S.fire) main().innerHTML = '<div class="incarcare">Se încarcă…</div>';
@@ -535,14 +957,8 @@ async function vedereClaude(id, fortat) {
   let h = '<div class="card compunere"><label class="mic" for="text-nou">Mesaj nou către Claude (o sesiune nouă pe Mac)</label>' +
     '<textarea id="text-nou" placeholder="Ex.: Urcă bugetul la Mobila Luna SALES la 910 dacă ROAS-ul de ieri ține." >' + esc(ciorna) + '</textarea>' +
     '<div class="rand"><span class="mic">Răspunsul apare aici, în fir.</span><button class="buton principal" id="trimite">Trimite</button></div></div>';
-  h += '<div class="sectiune"><h2>Fire</h2><span class="mic">' + fire.length + '</span></div>';
-  h += fire.length ? fire.map((f) => {
-    const nou = f.ultim_de === 'claude' && (!vazut[f.id] || vazut[f.id] < f.actualizat);
-    const chip = f.stare === 'lucreaza' ? '<span class="chip atentie">lucrează</span>' : f.stare === 'eroare' ? '<span class="chip rau">eroare</span>' : nou ? '<span class="chip bine">răspuns nou</span>' : '<span class="chip">gata</span>';
-    return '<div class="card apasabil" data-fir="' + esc(f.id) + '"><div class="rand"><b class="titlu-card">' + esc(f.titlu) + '</b>' + chip + '</div>' +
-      '<div class="mic">' + ora(f.actualizat) + ' · ' + f.nr + ' mesaje</div>' +
-      (f.stare === 'lucreaza' && f.pas ? '<div class="lucreaza"><span class="punct-anim"></span>' + esc(f.pas) + '</div>' : '<div class="text-2">' + esc((f.ultim || '').slice(0, 180)) + '</div>') + '</div>';
-  }).join('') : '<div class="gol">Niciun fir încă.</div>';
+  h += '<div class="sectiune"><h2>Conversații</h2><span class="mic">' + fire.length + '</span></div>';
+  h += fire.length ? fire.map((f) => cardFir(f, true)).join('') : '<div class="gol">Nicio conversație încă.</div>';
   main().innerHTML = h;
   const ta = $('#text-nou');
   ta.oninput = () => sessionStorage.setItem('panou.ciorna', ta.value);
@@ -572,12 +988,13 @@ async function vedereFir(id, fid, fortat) {
   if (!/^F-\d{1,6}$/.test(fid)) { location.hash = '#/claude'; return; }
   const f = await api('/api/fir?id=' + encodeURIComponent(fid));
   if (id !== randareId) return;
-  seteazaTitlu(f.titlu || fid);
+  seteazaTitlu(f.client_nume || f.titlu || fid);
   vazut[fid] = f.actualizat;
   try { localStorage.setItem(CHEIE_VAZUT, JSON.stringify(vazut)); } catch (e) { /* ignor */ }
   const eraJos = (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 80);
   const ciornaVeche = $('#text-urmare') ? $('#text-urmare').value : (sessionStorage.getItem('panou.urmare.' + fid) || '');
-  let h = '<div class="fir-bule">' + (f.mesaje || []).map((m) => '<div class="bula ' + esc(m.de) + '">' + esc(m.text) + '<span class="ora">' + (m.de === 'claude' ? 'Claude · ' : m.de === 'sistem' ? '' : 'Tu · ') + ora(m.ts) + '</span></div>').join('') + '</div>';
+  let h = (f.client ? '<div class="rand-st inapoi"><a class="buton mic-b" href="#/client/' + encodeURIComponent(f.client) + '/claude">← ' + esc(f.client_nume || f.client) + '</a><span class="mic">' + esc(f.titlu || '') + '</span></div>' : '') +
+    '<div class="fir-bule">' + (f.mesaje || []).map((m) => '<div class="bula ' + esc(m.de) + '">' + (m.de === 'claude' ? textBogat(m.text) : esc(m.text)) + '<span class="ora">' + (m.de === 'claude' ? 'Claude · ' : m.de === 'sistem' ? '' : 'Tu · ') + ora(m.ts) + '</span></div>').join('') + '</div>';
   if (f.stare === 'lucreaza') h += '<div class="lucreaza"><span class="punct-anim"></span>' + esc(f.pas || 'lucrează…') + '</div>';
   h += '<div class="compunere-fixa"><div class="rand"><textarea id="text-urmare" placeholder="' + (f.stare === 'lucreaza' ? 'Aștept să termine…' : 'Răspunde în același fir') + '"></textarea><button class="buton principal" id="trimite-urmare"' + (f.stare === 'lucreaza' ? ' disabled' : '') + '>Trimite</button></div></div>';
   main().innerHTML = h;
@@ -622,7 +1039,7 @@ async function porneste() {
     const ok = await imperecheaza(p);
     if (!ok) return;
   }
-  if (cfg && !location.hash) location.hash = '#/azi';
+  if (cfg && !location.hash) location.hash = '#/clienti';
   randeaza(false);
   if (cfg) incarcaFire(false).catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:') {

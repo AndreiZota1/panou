@@ -4,7 +4,7 @@
   "description": "Clienții, aprobările și comenzile către Claude, de pe telefon.",
   "lang": "ro",
   "id": "./",
-  "start_url": "./#/azi",
+  "start_url": "./#/clienti",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
