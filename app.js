@@ -876,6 +876,7 @@ function legaCompunereClient(c) {
   if (!ta) return;
   const cheie = 'panou.ciorna.c.' + c.slug;
   ta.oninput = () => sessionStorage.setItem(cheie, ta.value);
+  legaMicrofon(ta, $('#trimite-client'));
   if (ta.value) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   $$('[data-rapid]').forEach((b) => { b.onclick = () => { ta.value = INTREBARI_RAPIDE[Number(b.dataset.rapid)]; sessionStorage.setItem(cheie, ta.value); ta.focus(); }; });
   $$('[data-fir]').forEach((el) => { el.onclick = () => { location.hash = '#/fir/' + el.dataset.fir; }; });
@@ -962,6 +963,7 @@ async function vedereClaude(id, fortat) {
   main().innerHTML = h;
   const ta = $('#text-nou');
   ta.oninput = () => sessionStorage.setItem('panou.ciorna', ta.value);
+  legaMicrofon(ta, $('#trimite'));
   if (ciorna) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   $('#trimite').onclick = async () => {
     const text = ta.value.trim();
@@ -994,13 +996,15 @@ async function vedereFir(id, fid, fortat) {
   const eraJos = (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 80);
   const ciornaVeche = $('#text-urmare') ? $('#text-urmare').value : (sessionStorage.getItem('panou.urmare.' + fid) || '');
   let h = (f.client ? '<div class="rand-st inapoi"><a class="buton mic-b" href="#/client/' + encodeURIComponent(f.client) + '/claude">← ' + esc(f.client_nume || f.client) + '</a><span class="mic">' + esc(f.titlu || '') + '</span></div>' : '') +
-    '<div class="fir-bule">' + (f.mesaje || []).map((m) => '<div class="bula ' + esc(m.de) + '">' + (m.de === 'claude' ? textBogat(m.text) : esc(m.text)) + '<span class="ora">' + (m.de === 'claude' ? 'Claude · ' : m.de === 'sistem' ? '' : 'Tu · ') + ora(m.ts) + '</span></div>').join('') + '</div>';
+    '<div class="fir-bule">' + (f.mesaje || []).map((m, i) => '<div class="bula ' + esc(m.de) + '">' + (m.de === 'claude' ? textBogat(m.text) : esc(m.text)) + '<span class="ora">' + (m.de === 'claude' ? 'Claude · ' : m.de === 'sistem' ? '' : 'Tu · ') + ora(m.ts) + '</span>' + (m.de === 'claude' ? '<button class="buton-asculta" data-asculta="' + i + '">▶ Ascultă</button>' : '') + '</div>').join('') + '</div>';
   if (f.stare === 'lucreaza') h += '<div class="lucreaza"><span class="punct-anim"></span>' + esc(f.pas || 'lucrează…') + '</div>';
   h += '<div class="compunere-fixa"><div class="rand"><textarea id="text-urmare" placeholder="' + (f.stare === 'lucreaza' ? 'Aștept să termine…' : 'Răspunde în același fir') + '"></textarea><button class="buton principal" id="trimite-urmare"' + (f.stare === 'lucreaza' ? ' disabled' : '') + '>Trimite</button></div></div>';
   main().innerHTML = h;
   const ta = $('#text-urmare');
   ta.value = ciornaVeche;
   ta.oninput = () => sessionStorage.setItem('panou.urmare.' + fid, ta.value);
+  legaMicrofon(ta, $('#trimite-urmare'));
+  $$('[data-asculta]').forEach((b) => { b.onclick = () => asculta(b, (f.mesaje || [])[Number(b.dataset.asculta)].text || ''); });
   $('#trimite-urmare').onclick = async () => {
     const text = ta.value.trim();
     if (!text) return;
@@ -1029,10 +1033,243 @@ function programeaza(fn, ms) {
   temporizator = setTimeout(() => { if (document.visibilityState === 'visible' && $('#strat').hidden) fn(); else programeaza(fn, ms); }, ms);
 }
 
+
+/* ------------------------------------------------------------ VOCE: dictare, comenzi vocale, ascultare */
+async function apiSunet(blob) {
+  let r;
+  try {
+    r = await fetch(cfg.api + '/api/voce', {
+      method: 'POST', cache: 'no-store', referrerPolicy: 'no-referrer', body: blob,
+      headers: { Authorization: 'Bearer ' + cfg.cheie, 'ngrok-skip-browser-warning': '1', 'Content-Type': blob.type || 'audio/webm' },
+    });
+  } catch (e) { throw new Error('Nu ajung la Mac ca să transcriu.'); }
+  if (r.status === 401) throw new EroareAuth('neautorizat');
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.eroare || ('Eroare ' + r.status));
+  return j.text || '';
+}
+async function apiCiteste(text) {
+  let r;
+  try {
+    r = await fetch(cfg.api + '/api/citeste', {
+      method: 'POST', cache: 'no-store', referrerPolicy: 'no-referrer', body: JSON.stringify({ text }),
+      headers: { Authorization: 'Bearer ' + cfg.cheie, 'ngrok-skip-browser-warning': '1', 'Content-Type': 'application/json' },
+    });
+  } catch (e) { throw new Error('Nu ajung la Mac.'); }
+  if (r.status === 401) throw new EroareAuth('neautorizat');
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.eroare || ('Eroare ' + r.status)); }
+  return r.blob();
+}
+
+const Mic = {
+  rec: null, flux: null, bucati: [], start: 0, oprireAuto: null,
+  activ() { return !!this.rec; },
+  async porneste() {
+    if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('Browserul ăsta nu poate înregistra.');
+    this.flux = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const tip = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t));
+    this.rec = new MediaRecorder(this.flux, tip ? { mimeType: tip } : undefined);
+    this.bucati = [];
+    this.rec.ondataavailable = (e) => { if (e.data && e.data.size) this.bucati.push(e.data); };
+    this.rec.start(250);
+    this.start = Date.now();
+    this.oprireAuto = setTimeout(() => { if (this.rec && this.laOprireAuto) this.laOprireAuto(); }, 180000);
+  },
+  opreste() {
+    clearTimeout(this.oprireAuto);
+    return new Promise((res) => {
+      const rec = this.rec;
+      if (!rec) return res(null);
+      rec.onstop = () => {
+        const blob = new Blob(this.bucati, { type: (rec.mimeType || 'audio/webm').split(';')[0] });
+        this.inchide();
+        res(blob.size > 800 ? blob : null);
+      };
+      try { rec.stop(); } catch (e) { this.inchide(); res(null); }
+    });
+  },
+  inchide() {
+    if (this.flux) this.flux.getTracks().forEach((t) => t.stop());
+    this.flux = null; this.rec = null; this.bucati = [];
+  },
+  secunde() { return Math.floor((Date.now() - this.start) / 1000); },
+};
+function durataText(s) { return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+
+const ICON_MIC = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+
+/* butonul de dictare de langa „Trimite”: textul vorbit intra in caseta, il verifici, apoi trimiti */
+function legaMicrofon(ta, butonTrimite) {
+  if (!ta || !butonTrimite || !window.MediaRecorder) return;
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'buton buton-mic';
+  b.setAttribute('aria-label', 'Dictează');
+  b.innerHTML = ICON_MIC + '<span class="mic-text">Dictează</span>';
+  butonTrimite.parentNode.insertBefore(b, butonTrimite);
+  let ceas = null;
+  const gata = () => { clearInterval(ceas); b.classList.remove('inregistreaza'); b.disabled = false; b.querySelector('.mic-text').textContent = 'Dictează'; };
+  const opreste = async () => {
+    clearInterval(ceas);
+    b.disabled = true;
+    b.classList.remove('inregistreaza');
+    b.querySelector('.mic-text').textContent = 'Transcriu…';
+    try {
+      const blob = await Mic.opreste();
+      if (!blob) { toast('N-am prins nimic.', true); return gata(); }
+      const text = await apiSunet(blob);
+      if (!text) { toast('N-am înțeles nimic din înregistrare.', true); return gata(); }
+      ta.value = (ta.value.trim() ? ta.value.replace(/\s+$/, '') + ' ' : '') + text;
+      ta.dispatchEvent(new Event('input'));
+      ta.focus();
+      gata();
+      if (localStorage.getItem('panou.voce.auto') === '1') butonTrimite.click();
+    } catch (e) {
+      gata();
+      if (e instanceof EroareAuth) return ecranNeautorizat();
+      toast(e.message, true);
+    }
+  };
+  b.onclick = async () => {
+    if (b.classList.contains('inregistreaza')) return opreste();
+    if (Mic.activ()) return;
+    try {
+      await Mic.porneste();
+    } catch (e) {
+      toast(e.name === 'NotAllowedError' ? 'Microfonul e blocat: dă voie din setările browserului.' : (e.message || 'Microfonul nu pornește.'), true);
+      return;
+    }
+    Mic.laOprireAuto = opreste;
+    b.classList.add('inregistreaza');
+    b.querySelector('.mic-text').textContent = '0:00 · Stop';
+    ceas = setInterval(() => { b.querySelector('.mic-text').textContent = durataText(Mic.secunde()) + ' · Stop'; }, 500);
+  };
+}
+
+/* comanda vocala din orice pagina (butonul rotund): vorbesti, vezi ce am inteles, apoi o trimiti lui Claude */
+function clientDinPagina() {
+  const r = ruta();
+  if (r.v === 'client') return String(r.arg || '').split('/')[0] || null;
+  return null;
+}
+function gasesteClient(text) {
+  const cl = (S.stare && S.stare.clienti) || [];
+  const t = text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  let best = null;
+  cl.forEach((c) => {
+    const n = c.nume.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const scurt = n.replace(/\.(ro|eu|com)$/, '').split(/\s+/)[0];
+    if (t.includes(n) || (scurt.length >= 4 && t.includes(scurt))) {
+      if (!best || n.length > best.n.length) best = { c, n };
+    }
+  });
+  return best ? best.c : null;
+}
+async function comandaVocala() {
+  if (Mic.activ()) return;
+  try {
+    await Mic.porneste();
+  } catch (e) {
+    toast(e.name === 'NotAllowedError' ? 'Microfonul e blocat: dă voie din setările browserului.' : (e.message || 'Microfonul nu pornește.'), true);
+    return;
+  }
+  const slug = clientDinPagina();
+  const cl = slug && S.stare ? (S.stare.clienti || []).find((c) => c.slug === slug) : null;
+  let ceas = null;
+  const opreste = async () => {
+    clearInterval(ceas);
+    $('#voce-stare').textContent = 'Transcriu…';
+    $('#voce-stop').disabled = true;
+    try {
+      const blob = await Mic.opreste();
+      if (!blob) { inchideStrat(); toast('N-am prins nimic.', true); return; }
+      const text = await apiSunet(blob);
+      if (!text) { inchideStrat(); toast('N-am înțeles nimic.', true); return; }
+      arataComandaVocala(text, cl);
+    } catch (e) {
+      inchideStrat();
+      if (e instanceof EroareAuth) return ecranNeautorizat();
+      toast(e.message, true);
+    }
+  };
+  Mic.laOprireAuto = opreste;
+  strat('<h2>Te ascult…</h2><p class="text-2">' + (cl ? 'Comandă despre <b>' + esc(cl.nume) + '</b>. ' : '') + 'Spune ce vrei, apoi apasă Gata. Poți spune și „deschide NAESIA”.</p>' +
+    '<div class="voce-unda"><span></span><span></span><span></span><span></span><span></span></div><p class="mic" id="voce-stare">0:00</p>' +
+    '<div class="butoane"><button class="buton" id="voce-renunt">Renunț</button><button class="buton principal" id="voce-stop">Gata</button></div>',
+  () => {
+    $('#voce-stop').onclick = opreste;
+    $('#voce-renunt').onclick = async () => { clearInterval(ceas); await Mic.opreste(); inchideStrat(); };
+    ceas = setInterval(() => { const el = $('#voce-stare'); if (el) el.textContent = durataText(Mic.secunde()); }, 500);
+  });
+}
+function arataComandaVocala(text, clientPagina) {
+  const nav = text.match(/^\s*(deschide|arat[aă](-mi)?|du-m[aă] la|mergi la|intr[aă] (pe|la))\s+(.+)$/i);
+  if (nav) {
+    const c = gasesteClient(nav[5] || nav[4] || text);
+    if (c) { inchideStrat(); location.hash = '#/client/' + encodeURIComponent(c.slug) + '/status'; toast('Deschid ' + c.nume + '.'); return; }
+    if (/urgen/i.test(text)) { inchideStrat(); S.filtruClienti = 'urgent'; location.hash = '#/clienti'; return; }
+    if (/aprob|azi/i.test(text)) { inchideStrat(); location.hash = '#/azi'; return; }
+  }
+  const mentionat = gasesteClient(text);
+  const tinta = clientPagina || mentionat;
+  strat('<h2>Am înțeles</h2><textarea id="voce-text" class="voce-text">' + esc(text) + '</textarea>' +
+    '<p class="mic">' + (tinta ? 'Pleacă la Claude ca mesaj despre <b>' + esc(tinta.nume) + '</b>.' : 'Pleacă la Claude ca mesaj nou.') + ' Poți corecta textul înainte.</p>' +
+    '<div class="butoane"><button class="buton" id="voce-renunt">Renunț</button><button class="buton principal" id="voce-trimite">Trimite lui Claude</button></div>',
+  () => {
+    $('#voce-renunt').onclick = inchideStrat;
+    $('#voce-trimite').onclick = async () => {
+      const t = $('#voce-text').value.trim();
+      if (!t) return;
+      $('#voce-trimite').disabled = true;
+      try {
+        const r = await api('/api/comanda', { method: 'POST', body: tinta ? { text: t, client: tinta.slug } : { text: t } });
+        if (r.ok === false) throw new Error(r.eroare || 'nu s-a trimis');
+        inchideStrat();
+        S.fireLa = 0;
+        if (tinta) delete S.clienti[tinta.slug];
+        location.hash = '#/fir/' + r.fir;
+      } catch (e) {
+        inchideStrat();
+        if (e instanceof EroareAuth) return ecranNeautorizat();
+        toast(e.message, true);
+      }
+    };
+  });
+}
+
+/* „Asculta” la raspunsurile lui Claude: pornesti tu, nimic nu se citeste singur */
+const Redare = { audio: null, buton: null };
+function opresteRedarea() {
+  if (Redare.audio) { Redare.audio.pause(); URL.revokeObjectURL(Redare.audio.src); }
+  if (Redare.buton) Redare.buton.textContent = '▶ Ascultă';
+  Redare.audio = null; Redare.buton = null;
+}
+async function asculta(buton, text) {
+  if (Redare.buton === buton) { opresteRedarea(); return; }
+  opresteRedarea();
+  Redare.buton = buton;
+  buton.textContent = 'Se pregătește…';
+  try {
+    const blob = await apiCiteste(text);
+    if (Redare.buton !== buton) return;
+    const a = new Audio(URL.createObjectURL(blob));
+    Redare.audio = a;
+    a.onended = opresteRedarea;
+    buton.textContent = '■ Oprește';
+    await a.play();
+  } catch (e) {
+    opresteRedarea();
+    if (e instanceof EroareAuth) return ecranNeautorizat();
+    toast(e.message || 'Nu pot reda.', true);
+  }
+}
+
 /* ------------------------------------------------------------ pornire */
 async function porneste() {
+  const fab = $('#voce-fab');
+  if (fab) { if (window.MediaRecorder) fab.onclick = comandaVocala; else fab.hidden = true; }
   $('#reimprospateaza').onclick = () => { S.stareLa = 0; S.fireLa = 0; S.clienti = {}; randeaza(true); };
-  window.addEventListener('hashchange', () => randeaza(false));
+  window.addEventListener('hashchange', () => { opresteRedarea(); randeaza(false); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && cfg) randeaza(true); });
   const p = citestePerechea();
   if (p) {
