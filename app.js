@@ -1206,7 +1206,8 @@ function arataComandaVocala(text, clientPagina) {
   const nav = text.match(/^\s*(deschide|arat[aă](-mi)?|du-m[aă] la|mergi la|intr[aă] (pe|la))\s+(.+)$/i);
   if (nav) {
     const c = gasesteClient(nav[5] || nav[4] || text);
-    if (c) { inchideStrat(); location.hash = '#/client/' + encodeURIComponent(c.slug) + '/status'; toast('Deschid ' + c.nume + '.'); return; }
+    const sub = /urgen/i.test(text) ? 'urgent' : /de f[aă]cut/i.test(text) ? 'facut' : /[iî]mbun[aă]t[aă][tț]/i.test(text) ? 'imbunatatit' : /claude|conversa/i.test(text) ? 'claude' : 'status';
+    if (c) { inchideStrat(); location.hash = '#/client/' + encodeURIComponent(c.slug) + '/' + sub; toast('Deschid ' + c.nume + '.'); return; }
     if (/urgen/i.test(text)) { inchideStrat(); S.filtruClienti = 'urgent'; location.hash = '#/clienti'; return; }
     if (/aprob|azi/i.test(text)) { inchideStrat(); location.hash = '#/azi'; return; }
   }
