@@ -235,6 +235,11 @@ async function imperecheaza(p) {
     toast('Gata, telefonul e legat de Mac.');
     return true;
   } catch (e) {
+    if (cfg) {
+      // browserul e deja legat de Mac (de la o deschidere anterioara a linkului): linkul folosit nu mai conteaza
+      toast('Browserul ăsta e deja legat de Mac; linkul nu mai trebuie.');
+      return true;
+    }
     main().innerHTML = '<div class="imperechere"><h2>Nu s-a putut lega</h2><p class="text-2">' + esc(e.message) + '</p><p class="text-2">Un link se poate folosi o singură dată și e valabil 7 zile. Cere unul nou de la Claude, de pe Mac.</p></div>';
     return false;
   }
