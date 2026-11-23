@@ -231,3 +231,6 @@ details[open] > summary::before { content: '▾ '; }
 .incarcare { display: grid; place-items: center; padding: 60px 0; color: var(--text-3); }
 @media (min-width: 700px) { .rezumat-zi { grid-template-columns: repeat(4, 1fr); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+.verificator.rau > b { color: var(--rau); }
+.verificator.atentie > b { color: var(--atentie); }
+.verificator.bine > b { color: var(--bine); }
