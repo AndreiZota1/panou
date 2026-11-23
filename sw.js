@@ -1,7 +1,7 @@
 /* Service worker: tine doar fisierele aplicatiei (fara date). Datele vin mereu live de la Mac. */
-const VERSIUNE = 'panou-v5';
+const VERSIUNE = 'panou-v6';
 const FISIERE = [
-  './', 'index.html', 'app.css?v=5', 'app.js?v=5', 'manifest.webmanifest',
+  './', 'index.html', 'app.css?v=6', 'app.js?v=6', 'manifest.webmanifest',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png',
   'fonts/Rubik-500-latin.woff2', 'fonts/Rubik-500-latin-ext.woff2', 'fonts/Rubik-600-latin.woff2', 'fonts/Rubik-600-latin-ext.woff2',
   'fonts/Lexend-400-latin.woff2', 'fonts/Lexend-400-latin-ext.woff2', 'fonts/Lexend-500-latin.woff2', 'fonts/Lexend-500-latin-ext.woff2',

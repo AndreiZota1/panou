@@ -531,7 +531,8 @@ function sparkline(serie, k) {
 /* grafic pe zile: o singura serie, o singura axa, tooltip la fiecare bara */
 let graficeActive = [];
 function graficZile(serie, cheie, k, titlu, clasa) {
-  const W = 720, H = 210, pL = 52, pR = 8, pT = 14, pB = 28;
+  const lat = (main().clientWidth || 360) - (window.innerWidth >= 1040 ? 292 : 34);
+  const W = Math.max(280, Math.min(720, lat)), H = W < 500 ? 180 : 210, pL = 46, pR = 8, pT = 14, pB = 28;
   const n = serie.length;
   if (!n) return '';
   const vals = serie.map((d) => d[cheie]).filter((v) => !gol(v));
