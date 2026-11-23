@@ -248,7 +248,15 @@ async function imperecheaza(p) {
 function ecranImperechere() {
   seteazaTitlu('Panou');
   marcheazaTab('');
-  main().innerHTML = '<div class="imperechere"><h2>Aplicația nu e legată încă</h2><p class="text-2">Deschide pe telefon linkul de împerechere primit de la Claude. Linkul leagă telefonul ăsta de Mac-ul tău și merge o singură dată.</p></div>';
+  main().innerHTML = '<div class="imperechere"><h2>Aplicația nu e legată încă</h2><p class="text-2">Lipește aici linkul de împerechere primit de la Claude (ține apăsat pe link, Copiază, apoi lipește). Linkul merge o singură dată.</p>' +
+    '<textarea id="link-lipit" class="voce-text" placeholder="Lipește linkul aici"></textarea><div class="butoane"><button class="buton principal" id="leaga">Leagă de Mac</button></div></div>';
+  $('#leaga').onclick = async () => {
+    const m = ($('#link-lipit').value || '').match(/p=([A-Za-z0-9_-]{20,})/);
+    if (!m) { toast('Nu găsesc un link de împerechere în textul lipit.', true); return; }
+    history.replaceState(null, '', location.pathname + '#p=' + m[1]);
+    const p = citestePerechea();
+    if (p && await imperecheaza(p)) randeaza(false);
+  };
 }
 function ecranNeautorizat() {
   seteazaTitlu('Panou');
@@ -1286,7 +1294,7 @@ async function porneste() {
   if (cfg && !location.hash) location.hash = '#/clienti';
   randeaza(false);
   if (cfg) incarcaFire(false).catch(() => {});
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  if ('serviceWorker' in navigator && location.protocol === 'https:' && !window.Aplicatie) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 }
