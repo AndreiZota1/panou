@@ -137,10 +137,25 @@ function ciornaPentruClaude(text, slug) {
 /* ------------------------------------------------------------ date */
 async function incarcaStare(fortat) {
   if (!fortat && S.stare && Date.now() - S.stareLa < 20000) return S.stare;
-  S.stare = await api('/api/stare');
-  S.stareLa = Date.now();
+  try {
+    S.stare = await api('/api/stare');
+    S.stareLa = Date.now();
+    S.offline = null;
+    try { localStorage.setItem('panou.stare.copie', JSON.stringify({ la: Date.now(), stare: S.stare })); } catch (e) { /* plin */ }
+  } catch (e) {
+    if (e instanceof EroareAuth) throw e;
+    let copie = null;
+    try { copie = JSON.parse(localStorage.getItem('panou.stare.copie') || 'null'); } catch (x) { copie = null; }
+    if (!copie || !copie.stare) throw e;
+    S.stare = copie.stare;
+    S.stareLa = Date.now();
+    S.offline = copie.la;
+  }
   actualizeazaInsigne();
   return S.stare;
+}
+function bandaOffline() {
+  return S.offline ? '<div class="avert">Mac-ul nu răspunde acum. Vezi cifrele de la ' + new Date(S.offline).toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' }) + '; butoanele de aprobare și Claude merg doar când revine.</div>' : '';
 }
 async function incarcaFire(fortat) {
   if (!fortat && S.fire && Date.now() - S.fireLa < 4000) return S.fire;
@@ -149,10 +164,17 @@ async function incarcaFire(fortat) {
   actualizeazaInsigne();
   return S.fire;
 }
+function mesajeVazuteLa() { try { return localStorage.getItem('panou.mesaje.vazut') || ''; } catch (e) { return ''; } }
 function actualizeazaInsigne() {
   const a = $('#ins-azi');
   const n = S.stare ? (S.stare.de_aprobat || []).length : 0;
   a.textContent = n ? String(n) : '';
+  const im = $('#ins-mesaje');
+  if (im && S.mesaje) {
+    const v = mesajeVazuteLa();
+    const noi = S.mesaje.filter((m) => m.ts && m.ts > v).length;
+    im.textContent = v && noi ? String(noi) : '';
+  }
   const c = $('#ins-claude');
   c.className = 'insigna';
   c.textContent = '';
@@ -164,6 +186,46 @@ function actualizeazaInsigne() {
   }
 }
 
+
+/* ------------------------------------------------------------ REZUMATUL ZILEI (și citit, pentru mașină) */
+function totaluriIeri(s) {
+  let vanzari = 0, cost = 0, leaduri = 0, cuVanzari = 0;
+  (s.clienti || []).forEach((c) => {
+    const k = c.kpi;
+    if (!k || !k.ieri) return;
+    cost += k.ieri.cost || 0;
+    if (k.lead) leaduri += k.ieri.kpi || 0; else { vanzari += k.ieri.kpi || 0; cuVanzari += 1; }
+  });
+  return { vanzari, cost, leaduri, cuVanzari };
+}
+function cardRezumatZi(s) {
+  const t = totaluriIeri(s);
+  const rosii = (s.clienti || []).filter((c) => c.stare === 'ROSU');
+  const urg = (s.clienti || []).reduce((a, c) => a + (c.urgente || 0), 0);
+  return '<section class="card rezumat-card"><div class="rand"><h2>Ziua de azi</h2><button class="buton mic-b" id="asculta-rezumat">▶ Ascultă</button></div>' +
+    '<div class="rezumat-linii"><div><b>' + n0(t.vanzari) + ' lei</b><span>vânzări reale ieri, ' + t.cuVanzari + ' magazine</span></div>' +
+    '<div><b>' + n0(t.leaduri) + '</b><span>leaduri ieri</span></div><div><b>' + n0(t.cost) + ' lei</b><span>cost reclame ieri</span></div>' +
+    '<div><b>' + (s.de_aprobat || []).length + '</b><span>așteaptă DA-ul tău</span></div></div>' +
+    (rosii.length ? '<p class="mic">Pe roșu: ' + rosii.map((c) => esc(c.nume)).join(', ') + (urg ? ' · ' + urg + ' urgențe în total' : '') + '</p>' : '') + '</section>';
+}
+function textRezumatZi(s) {
+  const t = totaluriIeri(s);
+  const rosii = (s.clienti || []).filter((c) => c.stare === 'ROSU').map((c) => c.nume);
+  const ap = s.de_aprobat || [];
+  const parti = [];
+  parti.push('Bună. Ieri, magazinele au făcut ' + n0(t.vanzari) + ' de lei vânzări reale, iar clienții cu leaduri au primit ' + n0(t.leaduri) + ' de leaduri, la ' + n0(t.cost) + ' de lei cost de reclame.');
+  if (rosii.length) parti.push('Pe roșu sunt ' + rosii.length + ' clienți: ' + rosii.join(', ') + '.');
+  if (ap.length) {
+    parti.push(ap.length + (ap.length === 1 ? ' propunere așteaptă' : ' propuneri așteaptă') + ' DA-ul tău.');
+    ap.slice(0, 4).forEach((p) => {
+      const v = p.verificator ? (String(p.verificator.verdict || '').toUpperCase().startsWith('TRECE') ? ', verificatorul zice că trece' : ', verificatorul are rezerve') : '';
+      parti.push(p.client_nume + ': ' + (p.scurt || p.nume || '') + v + '.');
+    });
+  }
+  const azi = (s.de_facut || []).filter((d) => /andrei/i.test(d.cine || '') && /azi/i.test(d.urgenta || ''));
+  if (azi.length) parti.push('Ai ' + azi.length + ' lucruri de făcut azi. Primul: ' + azi[0].client_nume + ', ' + azi[0].ce + '.');
+  return parti.join(' ');
+}
 /* ------------------------------------------------------------ router */
 function ruta() {
   const h = location.hash.replace(/^#\/?/, '');
@@ -435,7 +497,7 @@ async function vedereAzi(id, fortat) {
 
   const aplicate = s.aplicat_azi || [];
   h += '<div class="sectiune"><h2>Aplicat azi</h2><span class="mic">' + aplicate.length + '</span></div>';
-  h += aplicate.length ? '<div class="card"><ul class="lista">' + aplicate.map((p) => '<li><b>' + esc(p.client_nume) + '</b> · ' + esc(p.nume || tip(p.tip)) + (p.de_la !== null && p.de_la !== undefined ? ' · ' + num(p.de_la) + ' → ' + num(p.la) + ' ' + unitate(p.unitate) : '') + ' <span class="mic">' + esc(p.id) + ', ' + ora(p.aplicat) + '</span></li>').join('') + '</ul></div>' : '<div class="gol">Nimic aplicat azi.</div>';
+  h += aplicate.length ? '<div class="card"><ul class="lista aplicate">' + aplicate.map((p, i) => '<li><span><b>' + esc(p.client_nume) + '</b> · ' + esc(p.nume || tip(p.tip)) + (p.de_la !== null && p.de_la !== undefined ? ' · ' + num(p.de_la) + ' → ' + num(p.la) + ' ' + unitate(p.unitate) : '') + ' <span class="mic">' + esc(p.id) + ', ' + ora(p.aplicat) + '</span></span><button class="buton mic-b" data-anuleaza="' + i + '">Anulează</button></li>').join('') + '</ul></div>' : '<div class="gol">Nimic aplicat azi.</div>';
 
   const facut = (s.de_facut || []);
   const pentruAndrei = facut.filter((d) => /andrei/i.test(d.cine || ''));
@@ -449,8 +511,11 @@ async function vedereAzi(id, fortat) {
   if (idei.length) h += '<details><summary>Idei (' + idei.length + ')</summary><div class="card"><ul class="lista">' + idei.map((d) => '<li><b>' + esc(d.client_nume) + '</b>: ' + esc(d.idee) + (d.cifra ? '<div class="mic">' + esc(d.cifra) + '</div>' : '') + '</li>').join('') + '</ul></div></details>';
   if (s.mesaj_zi) h += '<details><summary>Mesajul zilei, întreg</summary><div class="card pre mesaj-feed">' + esc(s.mesaj_zi) + '</div></details>';
 
-  main().innerHTML = h;
+  h += '<div class="sectiune"><h2>Sistemul</h2></div><div class="card" id="sistem"><span class="mic">Verific…</span></div>';
+  main().innerHTML = bandaOffline() + h;
   legaButoanePropuneri(main(), lista.concat(s.amanate || []));
+  $$('[data-anuleaza]').forEach((b) => { b.onclick = () => confirmaAnulare(aplicate[Number(b.dataset.anuleaza)]); });
+  incarcaSistem();
   const bt = $('#toate-trece');
   if (bt) bt.onclick = () => confirmaToateTrece(trece);
   $$('[data-raspunde]').forEach((b) => {
@@ -465,6 +530,45 @@ async function vedereAzi(id, fortat) {
   programeaza(() => randeaza(true), 90000);
 }
 
+
+async function incarcaSistem() {
+  const el = $('#sistem');
+  if (!el) return;
+  try {
+    const x = await api('/api/sistem');
+    const rand = (ok, t, d) => '<li><span class="semn ' + (ok ? 'ok' : 'rau') + '">' + (ok ? '✓' : '!') + '</span><span><b>' + esc(t) + '</b>' + (d ? '<small>' + esc(d) + '</small>' : '') + '</span></li>';
+    el.innerHTML = '<ul class="sistem">' +
+      rand(true, 'Mac-ul și tunelul', 'răspund acum') +
+      rand(!!x.punte_whatsapp, 'Puntea WhatsApp', x.punte_whatsapp ? 'pornită' : 'oprită: automatizările nu-ți pot scrie') +
+      rand(!!x.pilot_actualizat && (Date.now() - new Date(x.pilot_actualizat)) < 30 * 3600e3, 'Pilotul', x.pilot_actualizat ? 'ultima rulare ' + ora(x.pilot_actualizat) : 'nu știu când a rulat') +
+      rand(x.kill_switch === 'ON', 'Comutatorul pilotului', x.kill_switch || '—') +
+      (x.ultimul_mesaj ? rand(true, 'Ultimul mesaj al automatizărilor', ora(x.ultimul_mesaj)) : '') + '</ul>';
+  } catch (e) {
+    el.innerHTML = '<span class="mic">Nu pot verifica acum: ' + esc(e.message) + '</span>';
+  }
+}
+function confirmaAnulare(p) {
+  if (!p) return;
+  strat('<h2>Anulezi schimbarea?</h2><p>' + descriereSchimbare(p) + '</p><p class="mic">Pilotul pune la loc valoarea de dinainte (' + num(p.de_la) + ' ' + unitate(p.unitate) + '), cu aceeași gardă. (' + esc(p.id) + ')</p>' +
+    '<div class="butoane"><button class="buton" id="renunt">Renunț</button><button class="buton pericol" id="confirm">Da, anulează</button></div>',
+  () => {
+    $('#renunt').onclick = inchideStrat;
+    $('#confirm').onclick = async () => {
+      $('#confirm').disabled = true; $('#renunt').disabled = true; $('#confirm').textContent = 'Anulez…';
+      try {
+        const r = await api('/api/anuleaza', { method: 'POST', body: { id: p.id } });
+        inchideStrat();
+        toast(r.ok === false ? ('Nu s-a anulat: ' + (r.eroare || r.status || '')) : (p.id + ' anulată: ' + (r.status || 'gata')), r.ok === false);
+        S.stareLa = 0;
+        randeaza(true);
+      } catch (e) {
+        inchideStrat();
+        if (e instanceof EroareAuth) return ecranNeautorizat();
+        toast(e.message, true);
+      }
+    };
+  });
+}
 /* ------------------------------------------------------------ CLIENTI */
 const nf0 = new Intl.NumberFormat('ro-RO', { maximumFractionDigits: 0 });
 const gol = (x) => x === null || x === undefined || (typeof x === 'number' && isNaN(x));
@@ -663,7 +767,7 @@ async function vedereClienti(id, fortat) {
   const nr = (st) => cl.filter((c) => c.stare === st).length;
   const urg = cl.reduce((a, c) => a + (c.urgente || 0), 0);
   const filtru = S.filtruClienti || 'toti';
-  let h = '<div class="rezumat-zi patru">' +
+  let h = bandaOffline() + cardRezumatZi(s) + '<div class="rezumat-zi patru">' +
     '<div class="cifra"><b>' + nr('ROSU') + '</b><span>pe roșu</span></div>' +
     '<div class="cifra"><b>' + nr('GALBEN') + '</b><span>pe galben</span></div>' +
     '<div class="cifra"><b>' + nr('VERDE') + '</b><span>pe verde</span></div>' +
@@ -684,6 +788,7 @@ async function vedereClienti(id, fortat) {
       el.hidden = !ok;
     });
   };
+  const ar = $('#asculta-rezumat'); if (ar) ar.onclick = () => asculta(ar, textRezumatZi(S.stare));
   $('#cauta-client').oninput = aplicaFiltre;
   $$('[data-filtru]').forEach((b) => {
     b.onclick = () => {
@@ -867,6 +972,7 @@ function sectiuneImbunatatit(c) {
 }
 
 const INTREBARI_RAPIDE = [
+  'Scrie-mi un mesaj de status pentru client, pe stilul meu, fără diacritice, gata de trimis pe WhatsApp. Nu-l trimite.',
   'Ce e cel mai important de făcut azi la clientul ăsta?',
   'De ce e pe roșu și ce schimbăm ca să iasă?',
   'Cum stăm față de ținta lunii și ce trebuie să se întâmple până la final?',
@@ -922,6 +1028,9 @@ async function vedereMesaje(id, fortat) {
     S.mesajeLa = Date.now();
   }
   if (id !== randareId) return;
+  const vazutLa = mesajeVazuteLa();
+  if (S.mesaje[0] && S.mesaje[0].ts) { try { localStorage.setItem('panou.mesaje.vazut', S.mesaje[0].ts); } catch (e) { /* ignor */ } }
+  actualizeazaInsigne();
   seteazaActualizat(new Date(S.mesajeLa).toISOString());
   let h = '<input class="cauta" id="cauta-mesaj" type="search" placeholder="Caută în mesaje (client, cuvânt)" autocomplete="off" value="' + esc(S.cauta) + '">';
   h += '<p class="mic">Ce ți-au trimis automatizările pe WhatsApp, cele mai noi primele.</p><div id="feed"></div>';
@@ -934,7 +1043,7 @@ async function vedereMesaje(id, fortat) {
     lista.forEach((m) => {
       const z = ziua(m.ts);
       if (z !== ziCurenta) { out += '<div class="zi-feed">' + esc(z) + '</div>'; ziCurenta = z; }
-      out += '<div class="card mesaj-feed"><div class="mic">' + ora(m.ts) + '</div><div class="pre">' + esc(String(m.text || '').replace(/^🤖\s*/, '')) + '</div></div>';
+      out += '<div class="card mesaj-feed' + (vazutLa && m.ts > vazutLa ? ' nou' : '') + '"><div class="mic">' + ora(m.ts) + (vazutLa && m.ts > vazutLa ? ' · <b class="nou-et">nou</b>' : '') + '</div><div class="pre">' + esc(String(m.text || '').replace(/^🤖\s*/, '')) + '</div></div>';
     });
     $('#feed').innerHTML = out || '<div class="gol">Niciun mesaj.</div>';
   };
@@ -1280,6 +1389,9 @@ async function asculta(buton, text) {
 }
 
 /* ------------------------------------------------------------ pornire */
+function legaturaPentruAplicatie() {
+  try { if (cfg && window.Aplicatie && window.Aplicatie.legatura) window.Aplicatie.legatura(cfg.api, cfg.cheie); } catch (e) { /* nu e APK */ }
+}
 async function porneste() {
   const fab = $('#voce-fab');
   if (fab) { if (window.MediaRecorder) fab.onclick = comandaVocala; else fab.hidden = true; }
@@ -1292,6 +1404,8 @@ async function porneste() {
     if (!ok) return;
   }
   if (cfg && !location.hash) location.hash = '#/clienti';
+  legaturaPentruAplicatie();
+  if (cfg) api('/api/mesaje').then((r) => { S.mesaje = r.mesaje || []; S.mesajeLa = Date.now(); actualizeazaInsigne(); }).catch(() => {});
   randeaza(false);
   if (cfg) incarcaFire(false).catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:' && !window.Aplicatie) {
