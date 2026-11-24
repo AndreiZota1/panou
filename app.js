@@ -413,26 +413,49 @@ function arataRezultatDecizie(p, da, r) {
   () => { $('#ok').onclick = inchideStrat; });
 }
 
-function confirmaToateTrece(lista) {
-  strat('<h2>DA la toate cele cu TRECE?</h2><p class="text-2">Le aplic pe rând, fiecare cu garda ei:</p><ul class="lista">' +
-    lista.map((p) => '<li>' + esc(p.id) + ' · ' + esc(p.client_nume) + (p.nume ? ' · ' + esc(p.nume) : '') + (p.de_la !== null && p.de_la !== undefined ? ' · ' + num(p.de_la) + ' → ' + num(p.la) + ' ' + unitate(p.unitate) : '') + '</li>').join('') +
-    '</ul><div class="butoane"><button class="buton" id="renunt">Renunț</button><button class="buton principal" id="confirm">Da, confirm (' + lista.length + ')</button></div>',
+// 24.11.2026 (Andrei: „sa am in aplicatie posibilitatea sa dau accept la toate”): toate propunerile care asteapta DA, in afara
+// de cele respinse de verificator (acelea doar una cate una). Serverul le aplica pe rand, fiecare cu garda ei, in fundal.
+function confirmaAcceptToate(lista, respinse) {
+  const rand = (p) => '<li>' + esc(p.id) + ' · ' + esc(p.client_nume) + (p.nume ? ' · ' + esc(p.nume) : '') +
+    (p.de_la !== null && p.de_la !== undefined ? ' · ' + num(p.de_la) + ' → ' + num(p.la) + ' ' + unitate(p.unitate) : (p.scurt ? ' · ' + esc(p.scurt) : '')) + '</li>';
+  strat('<h2>Accept la toate (' + lista.length + ')?</h2><p class="text-2">Le aplic pe rând, fiecare cu garda ei:</p><ul class="lista">' +
+    lista.map(rand).join('') + '</ul>' +
+    (respinse.length ? '<p class="text-2">Rămân, pentru că le-a respins verificatorul (le aprobi separat dacă vrei):</p><ul class="lista">' + respinse.map(rand).join('') + '</ul>' : '') +
+    '<div class="butoane"><button class="buton" id="renunt">Renunț</button><button class="buton principal" id="confirm">Accept (' + lista.length + ')</button></div>',
   () => {
     $('#renunt').onclick = inchideStrat;
     $('#confirm').onclick = async () => {
       $('#confirm').disabled = true; $('#renunt').disabled = true;
-      const rez = [];
-      for (const p of lista) {
-        $('#confirm').textContent = 'Aplic ' + p.id + '…';
-        try {
-          const r = await api('/api/decizie', { method: 'POST', body: { id: p.id, raspuns: 'da' } });
-          rez.push([p, r.status || (r.ok === false ? ('eroare: ' + (r.eroare || '')) : 'gata')]);
-        } catch (e) {
-          if (e instanceof EroareAuth) { inchideStrat(); return ecranNeautorizat(); }
-          rez.push([p, 'eroare: ' + e.message]);
-        }
+      $('#confirm').textContent = 'Pornesc…';
+      let lot;
+      try {
+        lot = await api('/api/decizie-toate', { method: 'POST', body: { ids: lista.map((p) => p.id), sursa: 'aplicatie' } });
+      } catch (e) {
+        if (e instanceof EroareAuth) { inchideStrat(); return ecranNeautorizat(); }
+        strat('<h2>Nu s-a putut porni</h2><div class="eroare">' + esc(e.message) + '</div><div class="butoane"><button class="buton principal" id="ok">OK</button></div>', () => { $('#ok').onclick = inchideStrat; });
+        return;
       }
-      strat('<h2>Rezultat</h2><ul class="lista">' + rez.map(([p, s]) => '<li>' + esc(p.id) + ' · ' + esc(p.client_nume) + ': <b>' + esc(s) + '</b></li>').join('') + '</ul><div class="butoane"><button class="buton principal" id="ok">OK</button></div>',
+      if (!lot.ok) {
+        strat('<h2>Nimic de aprobat</h2><div class="eroare">' + esc(lot.eroare || '') + '</div><div class="butoane"><button class="buton principal" id="ok">OK</button></div>', () => { $('#ok').onclick = inchideStrat; });
+        return;
+      }
+      let st = null;
+      for (let i = 0; i < 200; i++) {   // ~10 minute; garda citeste live fiecare propunere
+        await new Promise((r) => setTimeout(r, 3000));
+        try { st = await api('/api/decizie-toate?lot=' + encodeURIComponent(lot.lot)); } catch (e) { continue; }
+        const facute = Object.keys(st.rezultate || {}).length;
+        const b = $('#confirm');
+        if (b) b.textContent = 'Aplic ' + facute + ' din ' + lot.pornite.length + '…';
+        if (st.gata) break;
+      }
+      const rez = (st && st.rezultate) || {};
+      const linii = lot.pornite.map((id) => {
+        const p = lista.find((x) => x.id === id) || { id: id, client_nume: '' };
+        const r = rez[id];
+        const txt = !r ? 'încă se aplică (vezi peste puțin în listă)' : (r.ok ? (r.status || 'aplicat') : ((r.status || 'eroare') + (r.motiv ? ': ' + r.motiv : (r.eroare ? ': ' + r.eroare : ''))));
+        return '<li>' + esc(id) + ' · ' + esc(p.client_nume) + ': <b>' + esc(txt) + '</b></li>';
+      }).concat((lot.sarite || []).map((x) => '<li>' + esc(x.id) + ': <b>sărită</b> (' + esc(x.motiv) + ')</li>'));
+      strat('<h2>Rezultat</h2><ul class="lista">' + linii.join('') + '</ul><div class="butoane"><button class="buton principal" id="ok">OK</button></div>',
         () => { $('#ok').onclick = inchideStrat; });
       S.stareLa = 0;
       randeaza(true);
@@ -466,9 +489,10 @@ async function vedereAzi(id, fortat) {
   h += '<div class="mic">Pilotul: ' + (s.pilot_actualizat ? ora(s.pilot_actualizat) : '—') + (s.kill_switch && s.kill_switch.stare ? ' · comutator ' + esc(s.kill_switch.stare) : '') + '</div>';
 
   const lista = s.de_aprobat || [];
-  const trece = lista.filter((p) => p.verificator && verdictClasa(p.verificator.verdict) === 'bine');
+  const respinse = lista.filter((p) => p.verificator && verdictClasa(p.verificator.verdict) === 'rau');
+  const deAcceptat = lista.filter((p) => !respinse.includes(p));
   h += '<div class="sectiune"><h2>De aprobat</h2><span class="mic">' + lista.length + '</span></div>';
-  if (trece.length >= 2) h += '<button class="buton mic-b" id="toate-trece">DA la cele ' + trece.length + ' cu TRECE de la verificator</button>';
+  if (deAcceptat.length >= 2) h += '<button class="buton principal" id="accept-toate">Accept la toate (' + deAcceptat.length + ')' + (respinse.length ? ', fără cele ' + respinse.length + ' respinse' : '') + '</button>';
   h += lista.length ? lista.map((p) => cardPropunere(p)).join('') : '<div class="gol">Nimic de aprobat acum.</div>';
   if ((s.amanate || []).length) {
     h += '<details><summary>Amânate de gardă (' + s.amanate.length + '), se pot aproba și ele</summary><div id="amanate">' + s.amanate.map((p) => cardPropunere(p, true)).join('') + '</div></details>';
@@ -516,8 +540,8 @@ async function vedereAzi(id, fortat) {
   legaButoanePropuneri(main(), lista.concat(s.amanate || []));
   $$('[data-anuleaza]').forEach((b) => { b.onclick = () => confirmaAnulare(aplicate[Number(b.dataset.anuleaza)]); });
   incarcaSistem();
-  const bt = $('#toate-trece');
-  if (bt) bt.onclick = () => confirmaToateTrece(trece);
+  const bt = $('#accept-toate');
+  if (bt) bt.onclick = () => confirmaAcceptToate(deAcceptat, respinse);
   $$('[data-raspunde]').forEach((b) => {
     b.onclick = () => {
       const [cl, i] = b.dataset.raspunde.split('|');
