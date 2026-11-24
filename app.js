@@ -492,7 +492,7 @@ async function vedereAzi(id, fortat) {
   const respinse = lista.filter((p) => p.verificator && verdictClasa(p.verificator.verdict) === 'rau');
   const deAcceptat = lista.filter((p) => !respinse.includes(p));
   h += '<div class="sectiune"><h2>De aprobat</h2><span class="mic">' + lista.length + '</span></div>';
-  if (deAcceptat.length >= 2) h += '<button class="buton principal" id="accept-toate">Accept la toate (' + deAcceptat.length + ')' + (respinse.length ? ', fără cele ' + respinse.length + ' respinse' : '') + '</button>';
+  if (deAcceptat.length >= 2) h += '<button class="buton principal" id="accept-toate">Accept la toate (' + deAcceptat.length + ')' + (respinse.length === 1 ? ', fără cea respinsă' : respinse.length > 1 ? ', fără cele ' + respinse.length + ' respinse' : '') + '</button>';
   h += lista.length ? lista.map((p) => cardPropunere(p)).join('') : '<div class="gol">Nimic de aprobat acum.</div>';
   if ((s.amanate || []).length) {
     h += '<details><summary>Amânate de gardă (' + s.amanate.length + '), se pot aproba și ele</summary><div id="amanate">' + s.amanate.map((p) => cardPropunere(p, true)).join('') + '</div></details>';
